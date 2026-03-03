@@ -1,0 +1,159 @@
+---
+title: "NYPD Shooting Incident Project"
+author: "C. Mill"
+date: "2026-02-12"
+output: html_document
+---
+
+# Step 1: Import the data
+
+This project uses the NYPD Shooting Incident Data (Historic).  
+It includes shooting date/time, borough, and whether the incident was marked as a statistical murder.
+
+
+`ARCHIVED_NYPD_Shooting_Incident_Data__Historic_.csv`
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(yardstick)
+library(scales)
+```
+
+```{r import}
+shoot_raw <- read_csv(
+  "ARCHIVED_NYPD_Shooting_Incident_Data__Historic_.csv",
+  show_col_types = FALSE
+) %>%
+  clean_names()
+
+glimpse(shoot_raw)
+```
+
+# Step 2: Tidy the data
+
+We convert the date column into a real Date type and create a month column for plotting.
+
+```{r tidy}
+shoot <- shoot_raw %>%
+  mutate(
+    occur_date = mdy(occur_date),
+    month = floor_date(occur_date, "month"),
+    boro = as.factor(boro),
+    statistical_murder_flag = as.integer(statistical_murder_flag)  # TRUE/FALSE -> 1/0
+  )
+
+summary(shoot)
+```
+
+## Missing data check
+
+```{r missing}
+missing_tbl <- shoot %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "missing_values") %>%
+  arrange(desc(missing_values))
+
+missing_tbl
+```
+
+If a plot needs a variable (like borough), I will filter out missing values only for that plot.  
+For the model, I will keep only rows that have the variables needed.
+
+# Step 3: Visualizations + short analysis
+
+## Plot 1: Shootings over time (monthly)
+
+```{r plot1}
+monthly <- shoot %>%
+  filter(!is.na(month)) %>%
+  count(month)
+
+ggplot(monthly, aes(month, n)) +
+  geom_line() +
+  labs(
+    title = "Monthly Shooting Incidents",
+    x = "Month",
+    y = "Number of incidents"
+  ) +
+  scale_y_continuous(labels = comma)
+```
+
+**Quick thought:** If the line goes up or down, it suggests shootings changed over time.  
+A question to investigate later: do trends differ by borough?
+
+## Plot 2: Shootings by borough
+
+```{r plot2}
+boro_counts <- shoot %>%
+  filter(!is.na(boro)) %>%
+  count(boro, sort = TRUE)
+
+ggplot(boro_counts, aes(reorder(boro, n), n)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Shooting Incidents by Borough",
+    x = "Borough",
+    y = "Number of incidents"
+  ) +
+  scale_y_continuous(labels = comma)
+```
+
+**Quick thought:** Borough totals may differ due to population size, environment, and reporting/policing differences.
+
+# Step 3 (required): One simple model
+
+
+```{r model}
+model_df <- shoot %>%
+  filter(!is.na(statistical_murder_flag), !is.na(boro))
+
+set.seed(123)
+idx <- sample.int(nrow(model_df), size = floor(0.8 * nrow(model_df)))
+train <- model_df[idx, ]
+test  <- model_df[-idx, ]
+
+m1 <- glm(
+  statistical_murder_flag ~ boro,
+  data = train,
+  family = binomial()
+)
+
+summary(m1)
+```
+
+## Model evaluation
+
+```{r eval}
+test_prob <- predict(m1, newdata = test, type = "response")
+test_pred <- if_else(test_prob > 0.5, 1, 0)
+
+results <- tibble(
+  truth = factor(test$statistical_murder_flag, levels = c(0, 1)),
+  estimate = factor(test_pred, levels = c(0, 1)),
+  prob = test_prob
+)
+
+conf_mat(results, truth, estimate)
+roc_auc(results, truth, prob)
+```
+
+# Step 4: Conclusion + Bias
+
+## Conclusion
+This project imported and cleaned the NYPD Shooting Incident dataset and created two visualizations.
+The plots show how shootings vary over time and differ by borough.
+A simple logistic regression model used borough to predict whether an incident was marked as a statistical murder.
+This model shows association only and does not prove cause.
+
+## Possible bias in the data
+- The dataset includes only incidents recorded by NYPD (unreported incidents are missing).
+- Some fields may be missing or recorded inconsistently.
+- “Statistical murder” is an administrative label and may reflect classification practices.
+
+## Personal bias and how I reduced it
+My bias could be assuming patterns reflect true behavior rather than reporting/system effects.
